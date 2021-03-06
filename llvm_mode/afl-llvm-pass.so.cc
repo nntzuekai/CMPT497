@@ -50,6 +50,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/CFGPrinter.h"
+#include "llvm/IR/InstVisitor.h"
 
 #if defined(LLVM34)
 #include "llvm/DebugInfo.h"
@@ -60,24 +61,6 @@
 #if defined(LLVM34) || defined(LLVM35) || defined(LLVM36)
 #define LLVM_OLD_DEBUG_API
 #endif
-
-using namespace llvm;
-
-cl::opt<std::string> DistanceFile(
-    "distance",
-    cl::desc("Distance file containing the distance of each basic block to the provided targets."),
-    cl::value_desc("filename")
-);
-
-cl::opt<std::string> TargetsFile(
-    "targets",
-    cl::desc("Input file containing the target lines of code."),
-    cl::value_desc("targets"));
-
-cl::opt<std::string> OutDirectory(
-    "outdir",
-    cl::desc("Output directory where Ftargets.txt, Fnames.txt, and BBnames.txt are generated."),
-    cl::value_desc("outdir"));
 
 namespace llvm {
 
@@ -103,6 +86,24 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
 };
 
 } // namespace llvm
+
+using namespace llvm;
+
+cl::opt<std::string> DistanceFile(
+    "distance",
+    cl::desc("Distance file containing the distance of each basic block to the provided targets."),
+    cl::value_desc("filename")
+);
+
+cl::opt<std::string> TargetsFile(
+    "targets",
+    cl::desc("Input file containing the target lines of code."),
+    cl::value_desc("targets"));
+
+cl::opt<std::string> OutDirectory(
+    "outdir",
+    cl::desc("Output directory where Ftargets.txt, Fnames.txt, and BBnames.txt are generated."),
+    cl::value_desc("outdir"));
 
 namespace {
 
@@ -178,61 +179,37 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
+inline static int inst_score(int arith_cnt, int store_cnt, int load_cnt){
+       return arith_cnt+2*(store_cnt+load_cnt);
+}
+
+struct InstScoreVIsitor:public InstVisitor<InstScoreVIsitor>{
+  int arith_cnt=0;
+  int store_cnt=0;
+  int load_cnt=0;
+
+  void reset(){
+    arith_cnt=0;
+    store_cnt=0;
+    load_cnt=0;
+  }
+
+  void visitBinaryOperator(BinaryOperator &I){
+    ++arith_cnt;
+  }
+
+  void visitLoad(LoadInst &I){
+    ++load_cnt;
+  }
+
+  void visitStore(StoreInst &I){
+    ++store_cnt;
+  }
+
+
+};
+
 bool AFLCoverage::runOnModule(Module &M) {
-
-  bool is_aflgo = false;
-  bool is_aflgo_preprocessing = false;
-
-  if (!TargetsFile.empty() && !DistanceFile.empty()) {
-    FATAL("Cannot specify both '-targets' and '-distance'!");
-    return false;
-  }
-
-  std::list<std::string> targets;
-  std::map<std::string, int> bb_to_dis;
-  std::vector<std::string> basic_blocks;
-
-  if (!TargetsFile.empty()) {
-
-    if (OutDirectory.empty()) {
-      FATAL("Provide output directory '-outdir <directory>'");
-      return false;
-    }
-
-    std::ifstream targetsfile(TargetsFile);
-    std::string line;
-    while (std::getline(targetsfile, line))
-      targets.push_back(line);
-    targetsfile.close();
-
-    is_aflgo_preprocessing = true;
-
-  } else if (!DistanceFile.empty()) {
-
-    std::ifstream cf(DistanceFile);
-    if (cf.is_open()) {
-
-      std::string line;
-      while (getline(cf, line)) {
-
-        std::size_t pos = line.find(",");
-        std::string bb_name = line.substr(0, pos);
-        int bb_dis = (int) (100.0 * atof(line.substr(pos + 1, line.length()).c_str()));
-
-        bb_to_dis.emplace(bb_name, bb_dis);
-        basic_blocks.push_back(bb_name);
-
-      }
-      cf.close();
-
-      is_aflgo = true;
-
-    } else {
-      FATAL("Unable to find %s.", DistanceFile.c_str());
-      return false;
-    }
-
-  }
 
   /* Show a banner */
 
@@ -240,12 +217,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
-    if (is_aflgo || is_aflgo_preprocessing)
-      SAYF(cCYA "aflgo-llvm-pass (yeah!) " cBRI VERSION cRST " (%s mode)\n",
-           (is_aflgo_preprocessing ? "preprocessing" : "distance instrumentation"));
-    else
-      SAYF(cCYA "afl-llvm-pass " cBRI VERSION cRST " by <lszekeres@google.com>\n");
-
+    SAYF(cCYA "afl-llvm-pass (497)" cBRI VERSION cRST " by RHK\n");
 
   } else be_quiet = 1;
 
@@ -262,150 +234,11 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   }
 
-  /* Default: Not selective */
-  char* is_selective_str = getenv("AFLGO_SELECTIVE");
-  unsigned int is_selective = 0;
-
-  if (is_selective_str && sscanf(is_selective_str, "%u", &is_selective) != 1)
-    FATAL("Bad value of AFLGO_SELECTIVE (must be 0 or 1)");
-
-  char* dinst_ratio_str = getenv("AFLGO_INST_RATIO");
-  unsigned int dinst_ratio = 100;
-
-  if (dinst_ratio_str) {
-
-    if (sscanf(dinst_ratio_str, "%u", &dinst_ratio) != 1 || !dinst_ratio ||
-        dinst_ratio > 100)
-      FATAL("Bad value of AFLGO_INST_RATIO (must be between 1 and 100)");
-
-  }
-
   /* Instrument all the things! */
 
   int inst_blocks = 0;
 
-  if (is_aflgo_preprocessing) {
 
-    std::ofstream bbnames(OutDirectory + "/BBnames.txt", std::ofstream::out | std::ofstream::app);
-    std::ofstream bbcalls(OutDirectory + "/BBcalls.txt", std::ofstream::out | std::ofstream::app);
-    std::ofstream fnames(OutDirectory + "/Fnames.txt", std::ofstream::out | std::ofstream::app);
-    std::ofstream ftargets(OutDirectory + "/Ftargets.txt", std::ofstream::out | std::ofstream::app);
-
-    /* Create dot-files directory */
-    std::string dotfiles(OutDirectory + "/dot-files");
-    if (sys::fs::create_directory(dotfiles)) {
-      FATAL("Could not create directory %s.", dotfiles.c_str());
-    }
-
-    for (auto &F : M) {
-
-      bool has_BBs = false;
-      std::string funcName = F.getName();
-
-      /* Black list of function names */
-      if (isBlacklisted(&F)) {
-        continue;
-      }
-
-      bool is_target = false;
-      for (auto &BB : F) {
-
-        std::string bb_name("");
-        std::string filename;
-        unsigned line;
-
-        for (auto &I : BB) {
-          getDebugLoc(&I, filename, line);
-
-          /* Don't worry about external libs */
-          static const std::string Xlibs("/usr/");
-          if (filename.empty() || line == 0 || !filename.compare(0, Xlibs.size(), Xlibs))
-            continue;
-
-          if (bb_name.empty()) {
-
-            std::size_t found = filename.find_last_of("/\\");
-            if (found != std::string::npos)
-              filename = filename.substr(found + 1);
-
-            bb_name = filename + ":" + std::to_string(line);
-          }
-
-          if (!is_target) {
-              for (auto &target : targets) {
-                std::size_t found = target.find_last_of("/\\");
-                if (found != std::string::npos)
-                  target = target.substr(found + 1);
-
-                std::size_t pos = target.find_last_of(":");
-                std::string target_file = target.substr(0, pos);
-                unsigned int target_line = atoi(target.substr(pos + 1).c_str());
-
-                if (!target_file.compare(filename) && target_line == line)
-                  is_target = true;
-
-              }
-            }
-
-            if (auto *c = dyn_cast<CallInst>(&I)) {
-
-              std::size_t found = filename.find_last_of("/\\");
-              if (found != std::string::npos)
-                filename = filename.substr(found + 1);
-
-              if (auto *CalledF = c->getCalledFunction()) {
-                if (!isBlacklisted(CalledF))
-                  bbcalls << bb_name << "," << CalledF->getName().str() << "\n";
-              }
-            }
-        }
-
-        if (!bb_name.empty()) {
-
-          BB.setName(bb_name + ":");
-          if (!BB.hasName()) {
-            std::string newname = bb_name + ":";
-            Twine t(newname);
-            SmallString<256> NameData;
-            StringRef NameRef = t.toStringRef(NameData);
-            BB.setValueName(ValueName::Create(NameRef));
-          }
-
-          bbnames << BB.getName().str() << "\n";
-          has_BBs = true;
-
-#ifdef AFLGO_TRACING
-          auto *TI = BB.getTerminator();
-          IRBuilder<> Builder(TI);
-
-          Value *bbnameVal = Builder.CreateGlobalStringPtr(bb_name);
-          Type *Args[] = {
-              Type::getInt8PtrTy(M.getContext()) //uint8_t* bb_name
-          };
-          FunctionType *FTy = FunctionType::get(Type::getVoidTy(M.getContext()), Args, false);
-          Constant *instrumented = M.getOrInsertFunction("llvm_profiling_call", FTy);
-          Builder.CreateCall(instrumented, {bbnameVal});
-#endif
-
-        }
-      }
-
-      if (has_BBs) {
-        /* Print CFG */
-        std::string cfgFileName = dotfiles + "/cfg." + funcName + ".dot";
-        std::error_code EC;
-        raw_fd_ostream cfgFile(cfgFileName, EC, sys::fs::F_None);
-        if (!EC) {
-          WriteGraph(cfgFile, &F, true);
-        }
-
-        if (is_target)
-          ftargets << F.getName().str() << "\n";
-        fnames << F.getName().str() << "\n";
-      }
-    }
-
-  } else {
     /* Distance instrumentation */
 
     LLVMContext &C = M.getContext();
@@ -553,7 +386,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       }
     }
-  }
+  
 
   /* Say something nice. */
 
