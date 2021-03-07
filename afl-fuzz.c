@@ -257,7 +257,7 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 
-  double distance;                    /* Distance to targets              */
+  double BB_score;                    /* Score of BBs                     */
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
@@ -284,9 +284,9 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
 
-static double cur_distance = -1.0;     /* Distance of executed input       */
-static double max_distance = -1.0;     /* Maximal distance for any input   */
-static double min_distance = -1.0;     /* Minimal distance for any input   */
+static double cur_BB_score = -1.0;     /* BB_score of executed input       */
+static double max_BB_score = -1.0;     /* Maximal BB_score for any input   */
+static double min_BB_score = -1.0;     /* Minimal BB_score for any input   */
 static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
 
 static u8* (*post_handler)(u8* buf, u32* len);
@@ -799,15 +799,15 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
 
-  q->distance = cur_distance;
-  if (cur_distance > 0) {
+  q->BB_score = cur_BB_score;
+  if (cur_BB_score > 0) {
 
-    if (max_distance <= 0) {
-      max_distance = cur_distance;
-      min_distance = cur_distance;
+    if (max_BB_score <= 0) {
+      max_BB_score = cur_BB_score;
+      min_BB_score = cur_BB_score;
     }
-    if (cur_distance > max_distance) max_distance = cur_distance;
-    if (cur_distance < min_distance) min_distance = cur_distance;
+    if (cur_BB_score > max_BB_score) max_BB_score = cur_BB_score;
+    if (cur_BB_score < min_BB_score) min_BB_score = cur_BB_score;
 
   }
 
@@ -913,14 +913,14 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
   u32  i = (MAP_SIZE >> 3);
 
-  /* Calculate distance of current input to targets */
-  u64* total_distance = (u64*) (trace_bits + MAP_SIZE);
+  /* Calculate BB_score of current input to targets */
+  u64* total_BB_score = (u64*) (trace_bits + MAP_SIZE);
   u64* total_count = (u64*) (trace_bits + MAP_SIZE + 8);
 
   if (*total_count > 0)
-    cur_distance = (double) (*total_distance) / (double) (*total_count);
+    cur_BB_score = (double) (*total_BB_score) / (double) (*total_count);
   else
-    cur_distance = -1.0;
+    cur_BB_score = -1.0;
 
 #else
 
@@ -929,14 +929,14 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
   u32  i = (MAP_SIZE >> 2);
 
-  /* Calculate distance of current input to targets */
-  u32* total_distance = (u32*)(trace_bits + MAP_SIZE);
+  /* Calculate BB_score of current input to targets */
+  u32* total_BB_score = (u32*)(trace_bits + MAP_SIZE);
   u32* total_count = (u32*)(trace_bits + MAP_SIZE + 4);
 
   if (*total_count > 0) {
-    cur_distance = (double) (*total_distance) / (double) (*total_count);
+    cur_BB_score = (double) (*total_BB_score) / (double) (*total_count);
   else
-    cur_distance = -1.0;
+    cur_BB_score = -1.0;
 
 #endif /* ^__x86_64__ */
 
@@ -1395,7 +1395,7 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  /* Allocate 24 byte more for distance info */
+  /* Allocate 24 byte more for BB_score info */
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
@@ -2637,20 +2637,20 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     /* This is relevant when test cases are added w/out save_if_interesting */
 
-    if (q->distance <= 0) {
+    if (q->BB_score <= 0) {
 
-      /* This calculates cur_distance */
+      /* This calculates cur_BB_score */
       has_new_bits(virgin_bits);
 
-      q->distance = cur_distance;
-      if (cur_distance > 0) {
+      q->BB_score = cur_BB_score;
+      if (cur_BB_score > 0) {
 
-        if (max_distance <= 0) {
-          max_distance = cur_distance;
-          min_distance = cur_distance;
+        if (max_BB_score <= 0) {
+          max_BB_score = cur_BB_score;
+          min_BB_score = cur_BB_score;
         }
-        if (cur_distance > max_distance) max_distance = cur_distance;
-        if (cur_distance < min_distance) min_distance = cur_distance;
+        if (cur_BB_score > max_BB_score) max_BB_score = cur_BB_score;
+        if (cur_BB_score < min_BB_score) min_BB_score = cur_BB_score;
 
       }
 
@@ -4848,18 +4848,18 @@ static u32 calculate_score(struct queue_entry* q) {
   }
 
   double power_factor = 1.0;
-  if (q->distance > 0) {
+  if (q->BB_score > 0) {
 
-    double normalized_d = 0; // when "max_distance == min_distance", we set the normalized_d to 0 so that we can sufficiently explore those testcases whose distance >= 0.
-    if (max_distance != min_distance)
-      normalized_d = (q->distance - min_distance) / (max_distance - min_distance);
+    double normalized_d = 0; // when "max_BB_score == min_BB_score", we set the normalized_d to 0 so that we can sufficiently explore those testcases whose BB_score >= 0.
+    if (max_BB_score != min_BB_score)
+      normalized_d = (q->BB_score - min_BB_score) / (max_BB_score - min_BB_score);
 
     if (normalized_d >= 0) {
 
-        double p = (1.0 - normalized_d) * (1.0 - T) + 0.5 * T;
+        double p = normalized_d * (1.0 - T) + 0.5 * T;
         power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
 
-    }// else WARNF ("Normalized distance negative: %f", normalized_d);
+    }// else WARNF ("Normalized BB_score negative: %f", normalized_d);
 
   }
 
@@ -4870,7 +4870,7 @@ static u32 calculate_score(struct queue_entry* q) {
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
 
   /* AFLGO-DEBUGGING */
-  // fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
+  // fprintf(stderr, "[Time %llu] q->BB_score: %4lf, max_BB_score: %4lf min_BB_score: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->BB_score, max_BB_score, min_BB_score, T, power_factor, perf_score);
 
   return perf_score;
 
@@ -7861,7 +7861,7 @@ int main(int argc, char** argv) {
   struct timeval tv;
   struct timezone tz;
 
-  SAYF(cCYA "aflgo (yeah!) " cBRI VERSION cRST "\n");
+  SAYF(cCYA "aflgo (497) " cBRI VERSION cRST "\n");
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 

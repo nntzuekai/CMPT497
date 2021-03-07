@@ -148,19 +148,28 @@ static void getDebugLoc(const Instruction *I, std::string &Filename,
 }
 
 static bool isBlacklisted(const Function *F) {
-  static const SmallVector<std::string, 8> Blacklist = {
+  static const SmallVector<std::string, 4> BlacklistPrefixes{
     "asan.",
     "llvm.",
     "sancov.",
-    "__ubsan_handle_",
+    "__ubsan_handle_"
+  };
+
+  for (auto const &BlacklistPref : BlacklistPrefixes) {
+    if (F->getName().startswith(BlacklistPref)) {
+      return true;
+    }
+  }
+
+  static const SmallVector<std::string, 4> Blacklist{
     "free",
     "malloc",
     "calloc",
     "realloc"
   };
 
-  for (auto const &BlacklistFunc : Blacklist) {
-    if (F->getName().startswith(BlacklistFunc)) {
+  for(auto const &Func:Blacklist){
+    if(F->getName()==Func){
       return true;
     }
   }
@@ -258,6 +267,9 @@ bool AFLCoverage::runOnModule(Module &M) {
 
     InstScoreVisitor vis;
     for (auto &F : M) {
+      if(isBlacklisted(&F)){
+        continue;
+      }
       for (auto &BB : F) {
         vis.reset();
         vis.visit(BB);
