@@ -140,9 +140,7 @@ static void edit_params(u32 argc, char** argv) {
   while (--argc) {
     u8* cur = *(++argv);
 
-    if (!strncmp(cur, "-distance", 9)
-        || !strncmp(cur, "-targets", 8)
-        || !strncmp(cur, "-outdir", 7))
+    if (!strncmp(cur, "-c497", 5))
       cc_params[cc_par_cnt++] = "-mllvm";
 
     if (!strcmp(cur, "-m32")) bit_mode = 32;
@@ -322,9 +320,9 @@ int main(int argc, char** argv) {
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
 #ifdef USE_TRACE_PC
-    SAYF(cCYA "aflgo-compiler (yeah!) [tpcg] " cBRI VERSION  cRST "\n");
+    SAYF(cCYA "aflgo-compiler (497) [tpcg] " cBRI VERSION  cRST "\n");
 #else
-    SAYF(cCYA "aflgo-compiler (yeah!) " cBRI VERSION  cRST "\n");
+    SAYF(cCYA "aflgo-compiler (497) " cBRI VERSION  cRST "\n");
 #endif /* ^USE_TRACE_PC */
 
   }
