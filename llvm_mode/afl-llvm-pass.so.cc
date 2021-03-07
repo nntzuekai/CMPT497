@@ -89,22 +89,6 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
 
 using namespace llvm;
 
-cl::opt<std::string> DistanceFile(
-    "distance",
-    cl::desc("Distance file containing the distance of each basic block to the provided targets."),
-    cl::value_desc("filename")
-);
-
-cl::opt<std::string> TargetsFile(
-    "targets",
-    cl::desc("Input file containing the target lines of code."),
-    cl::value_desc("targets"));
-
-cl::opt<std::string> OutDirectory(
-    "outdir",
-    cl::desc("Output directory where Ftargets.txt, Fnames.txt, and BBnames.txt are generated."),
-    cl::value_desc("outdir"));
-
 namespace {
 
   class AFLCoverage : public ModulePass {
@@ -179,14 +163,14 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
-inline static int inst_score(int arith_cnt, int store_cnt, int load_cnt){
+inline static uint64_t inst_score(uint64_t arith_cnt, uint64_t store_cnt, uint64_t load_cnt){
        return arith_cnt+2*(store_cnt+load_cnt);
 }
 
-struct InstScoreVIsitor:public InstVisitor<InstScoreVIsitor>{
-  int arith_cnt=0;
-  int store_cnt=0;
-  int load_cnt=0;
+struct InstScoreVisitor:public InstVisitor<InstScoreVisitor>{
+  uint64_t arith_cnt=0;
+  uint64_t store_cnt=0;
+  uint64_t load_cnt=0;
 
   void reset(){
     arith_cnt=0;
@@ -253,7 +237,7 @@ bool AFLCoverage::runOnModule(Module &M) {
     IntegerType *LargestType = Int32Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 4);
 #endif
-    ConstantInt *MapDistLoc = ConstantInt::get(LargestType, MAP_SIZE);
+    ConstantInt *MapScoreLoc = ConstantInt::get(LargestType, MAP_SIZE);
     ConstantInt *One = ConstantInt::get(LargestType, 1);
 
     /* Get globals for the SHM region and the previous location. Note that
@@ -267,53 +251,11 @@ bool AFLCoverage::runOnModule(Module &M) {
         M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
         0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
 
+    InstScoreVisitor vis;
     for (auto &F : M) {
-
-      int distance = -1;
-
       for (auto &BB : F) {
-
-        distance = -1;
-
-        if (is_aflgo) {
-
-          std::string bb_name;
-          for (auto &I : BB) {
-            std::string filename;
-            unsigned line;
-            getDebugLoc(&I, filename, line);
-
-            if (filename.empty() || line == 0)
-              continue;
-            std::size_t found = filename.find_last_of("/\\");
-            if (found != std::string::npos)
-              filename = filename.substr(found + 1);
-
-            bb_name = filename + ":" + std::to_string(line);
-            break;
-          }
-
-          if (!bb_name.empty()) {
-
-            if (find(basic_blocks.begin(), basic_blocks.end(), bb_name) == basic_blocks.end()) {
-
-              if (is_selective)
-                continue;
-
-            } else {
-
-              /* Find distance for BB */
-
-              if (AFL_R(100) < dinst_ratio) {
-                std::map<std::string,int>::iterator it;
-                for (it = bb_to_dis.begin(); it != bb_to_dis.end(); ++it)
-                  if (it->first.compare(bb_name) == 0)
-                    distance = it->second;
-
-              }
-            }
-          }
-        }
+        vis.reset();
+        vis.visit(BB);
 
         BasicBlock::iterator IP = BB.getFirstInsertionPt();
         IRBuilder<> IRB(&(*IP));
@@ -353,34 +295,34 @@ bool AFLCoverage::runOnModule(Module &M) {
             IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        if (distance >= 0) {
+        uint64_t score=inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
 
-          ConstantInt *Distance =
-              ConstantInt::get(LargestType, (unsigned) distance);
+        ConstantInt *Score =
+            ConstantInt::get(LargestType, score);
 
-          /* Add distance to shm[MAPSIZE] */
+        /* Add score to shm[MAPSIZE] */
 
-          Value *MapDistPtr = IRB.CreateBitCast(
-              IRB.CreateGEP(MapPtr, MapDistLoc), LargestType->getPointerTo());
-          LoadInst *MapDist = IRB.CreateLoad(MapDistPtr);
-          MapDist->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *MapScorePtr = IRB.CreateBitCast(
+            IRB.CreateGEP(MapPtr, MapScoreLoc), LargestType->getPointerTo());
+        LoadInst *MapScore = IRB.CreateLoad(MapScorePtr);
+        MapScore->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-          Value *IncrDist = IRB.CreateAdd(MapDist, Distance);
-          IRB.CreateStore(IncrDist, MapDistPtr)
-              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *IncrDist = IRB.CreateAdd(MapScore, Score);
+        IRB.CreateStore(IncrDist, MapScorePtr)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-          /* Increase count at shm[MAPSIZE + (4 or 8)] */
+        /* Increase count at shm[MAPSIZE + (4 or 8)] */
 
-          Value *MapCntPtr = IRB.CreateBitCast(
-              IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
-          LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
-          MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *MapCntPtr = IRB.CreateBitCast(
+            IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
+        LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
+        MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-          Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
-          IRB.CreateStore(IncrCnt, MapCntPtr)
-              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
+        IRB.CreateStore(IncrCnt, MapCntPtr)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        }
+        
 
         inst_blocks++;
 
@@ -390,16 +332,16 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   /* Say something nice. */
 
-  if (!is_aflgo_preprocessing && !be_quiet) {
+  if (!be_quiet) {
 
     if (!inst_blocks) WARNF("No instrumentation targets found.");
-    else OKF("Instrumented %u locations (%s mode, ratio %u%%, dist. ratio %u%%).",
+    else OKF("Instrumented %u locations (%s mode, ratio %u%%).",
              inst_blocks,
              getenv("AFL_HARDEN")
              ? "hardened"
              : ((getenv("AFL_USE_ASAN") || getenv("AFL_USE_MSAN"))
                ? "ASAN/MSAN" : "non-hardened"),
-             inst_ratio, dinst_ratio);
+             inst_ratio);
 
   }
 
@@ -415,6 +357,11 @@ static void registerAFLPass(const PassManagerBuilder &,
 
 }
 
+static RegisterPass<AFLCoverage> OptRegAFL{
+  "AFLC", "AFLCoverage",
+  false,
+  false
+};
 
 static RegisterStandardPasses RegisterAFLPass(
     PassManagerBuilder::EP_OptimizerLast, registerAFLPass);
