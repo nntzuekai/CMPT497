@@ -89,6 +89,11 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
 
 using namespace llvm;
 
+cl::opt<bool> Enable497{
+    "c497",
+    cl::desc("Enable my instrumentation.")
+};
+
 namespace {
 
   class AFLCoverage : public ModulePass {
@@ -297,32 +302,33 @@ bool AFLCoverage::runOnModule(Module &M) {
 
         uint64_t score=inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
 
-        ConstantInt *Score =
-            ConstantInt::get(LargestType, score);
+        if(score>0&&Enable497.getValue()){
+          ConstantInt *Score =
+              ConstantInt::get(LargestType, score);
 
-        /* Add score to shm[MAPSIZE] */
+          /* Add score to shm[MAPSIZE] */
 
-        Value *MapScorePtr = IRB.CreateBitCast(
-            IRB.CreateGEP(MapPtr, MapScoreLoc), LargestType->getPointerTo());
-        LoadInst *MapScore = IRB.CreateLoad(MapScorePtr);
-        MapScore->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *MapScorePtr = IRB.CreateBitCast(
+              IRB.CreateGEP(MapPtr, MapScoreLoc), LargestType->getPointerTo());
+          LoadInst *MapScore = IRB.CreateLoad(MapScorePtr);
+          MapScore->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        Value *IncrDist = IRB.CreateAdd(MapScore, Score);
-        IRB.CreateStore(IncrDist, MapScorePtr)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *IncrDist = IRB.CreateAdd(MapScore, Score);
+          IRB.CreateStore(IncrDist, MapScorePtr)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        /* Increase count at shm[MAPSIZE + (4 or 8)] */
+          /* Increase count at shm[MAPSIZE + (4 or 8)] */
 
-        Value *MapCntPtr = IRB.CreateBitCast(
-            IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
-        LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
-        MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *MapCntPtr = IRB.CreateBitCast(
+              IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
+          LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
+          MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
-        IRB.CreateStore(IncrCnt, MapCntPtr)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
+          IRB.CreateStore(IncrCnt, MapCntPtr)
+              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        
+        }  
 
         inst_blocks++;
 
