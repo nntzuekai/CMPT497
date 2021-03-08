@@ -212,10 +212,15 @@ bool AFLCoverage::runOnModule(Module &M) {
   /* Show a banner */
 
   char be_quiet = 0;
-
+  bool is_c497=Enable497.getValue();
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
-    SAYF(cCYA "afl-llvm-pass (497)" cBRI VERSION cRST " by RHK\n");
+    if(is_c497){
+      SAYF(cCYA "afl-llvm-pass (497)" cBRI VERSION cRST " by RHK\n");
+    }
+    else{
+      SAYF(cCYA "afl-llvm-pass " cBRI VERSION cRST " by <lszekeres@google.com>\n");
+    }
 
   } else be_quiet = 1;
 
@@ -314,7 +319,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
         uint64_t score=inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
 
-        if(score>0&&Enable497.getValue()){
+        if(score>0&&is_c497){
           ConstantInt *Score =
               ConstantInt::get(LargestType, score);
 
