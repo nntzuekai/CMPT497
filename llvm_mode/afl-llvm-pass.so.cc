@@ -51,6 +51,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/Analysis/CFG.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 #if defined(LLVM34)
 #include "llvm/DebugInfo.h"
@@ -89,10 +92,18 @@ struct DOTGraphTraits<Function*> : public DefaultDOTGraphTraits {
 
 using namespace llvm;
 
-cl::opt<bool> Enable497{
-    "c497",
-    cl::desc("Enable my instrumentation.")
+cl::opt<bool> InstAnalysis{
+    "inst",
+    cl::desc("Enable Instruction Analysis and Instrumentation.")
 };
+
+cl::opt<bool> ExitPathAnalysis{
+    "exit",
+    cl::desc("Enable Path-to-exit Analysis and Instrumentation.")
+};
+
+constexpr int max_exit_dist=5;
+constexpr int score_ratio=5;
 
 namespace {
 
@@ -178,7 +189,17 @@ static bool isBlacklisted(const Function *F) {
 }
 
 inline static uint64_t inst_score(uint64_t arith_cnt, uint64_t store_cnt, uint64_t load_cnt){
-       return arith_cnt+2*(store_cnt+load_cnt);
+  return arith_cnt+2*(store_cnt+load_cnt);
+}
+
+inline static uint64_t exit_score(const std::map<int,int> &exit_dists){
+  uint64_t sum=0;
+
+  for(auto p=exit_dists.lower_bound(0),end=exit_dists.upper_bound(max_exit_dist);p!=end;++p){
+    sum+=p->second;
+  }
+
+  return sum;
 }
 
 struct InstScoreVisitor:public InstVisitor<InstScoreVisitor>{
@@ -207,15 +228,106 @@ struct InstScoreVisitor:public InstVisitor<InstScoreVisitor>{
 
 };
 
+std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_path_dists(const Function &F){
+	auto BB_num=F.size();
+	std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_dists_ptr;
+  auto &exit_dists=*exit_dists_ptr;
+	DenseMap<const BasicBlock *, std::array<int, 2> > out_degs;
+	// DenseMap<const BasicBlock *, SmallVector<const BasicBlock *, 4> > BB_preds;
+
+	SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 8> back_edges;
+	FindFunctionBackedges(F,back_edges);
+
+	DenseSet<std::pair<const BasicBlock *, const BasicBlock *> > BE_set;
+	BE_set.insert(back_edges.begin(),back_edges.end());
+
+	DenseSet<const BasicBlock *> zero_degs;
+	int finised_cnt=0;
+
+	for(const auto &BB:F){
+		auto T_inst=BB.getTerminator();
+		auto succ_num=T_inst->getNumSuccessors();
+
+		if(succ_num>0){
+			for(const auto *succ_BB:successors(&BB)){
+				if(BE_set.count(std::make_pair(&BB,succ_BB))){
+					++out_degs[&BB][1];
+				}
+				else{
+					++out_degs[&BB][0];
+				}
+			}
+			if(out_degs[&BB][0]==0){
+				exit_dists[&BB][0]=1;
+				zero_degs.insert(&BB);
+			}
+		}
+		else{
+			exit_dists[&BB][0]=1;
+			zero_degs.insert(&BB);
+		}
+		
+	}
+
+	while(!zero_degs.empty()){
+		const BasicBlock *BB=*zero_degs.begin();
+		zero_degs.erase(zero_degs.begin());
+
+		const auto &exits_entry=exit_dists[BB];
+
+		for(const BasicBlock *pred_BB:predecessors(BB)){
+			if(BE_set.count(std::make_pair(pred_BB,BB))){
+				continue;
+			}
+
+			for(const auto &KV:exits_entry){
+				exit_dists[pred_BB][KV.first+1]+=KV.second;
+			}
+
+			--out_degs[pred_BB][0];
+
+			if(out_degs[pred_BB][0]==0){
+				zero_degs.insert(pred_BB);
+			}
+		}
+
+		++finised_cnt;
+	}
+
+	assert(finised_cnt==BB_num);
+
+	for(const auto &BB:F){
+
+		if(out_degs[&BB][1]){
+			
+			for(const BasicBlock *succ:successors(&BB)){
+				if(!BE_set.count(std::make_pair(&BB,succ))){
+					continue;
+				}
+
+				auto max_e_dist=exit_dists[succ].rbegin()->second;
+
+				++exit_dists[&BB][-max_e_dist-1];
+			}
+
+			
+		}
+	}
+
+	return exit_dists_ptr;
+}
+
+
 bool AFLCoverage::runOnModule(Module &M) {
 
   /* Show a banner */
 
   char be_quiet = 0;
-  bool is_c497=Enable497.getValue();
+  bool do_inst=InstAnalysis.getValue();
+  bool do_exit=ExitPathAnalysis.getValue();
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
-    if(is_c497){
+    if(do_inst||do_exit){
       SAYF(cCYA "afl-llvm-pass (497)" cBRI VERSION cRST " by RHK\n");
     }
     else{
@@ -275,9 +387,16 @@ bool AFLCoverage::runOnModule(Module &M) {
       if(isBlacklisted(&F)){
         continue;
       }
+
+      decltype(exit_path_dists(F)) exit_dists;
+      if(do_inst){
+        exit_dists=exit_path_dists(F);
+      }
+
       for (auto &BB : F) {
-        vis.reset();
-        vis.visit(BB);
+
+		    // outs()<<BB<<"\n";
+		    // outs()<<score<<"\n=================\n";
 
         BasicBlock::iterator IP = BB.getFirstInsertionPt();
         IRBuilder<> IRB(&(*IP));
@@ -317,36 +436,49 @@ bool AFLCoverage::runOnModule(Module &M) {
             IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        uint64_t score=inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
+        if(do_inst||do_exit){
+          uint64_t score=0;
 
-        if(score>0&&is_c497){
-          ConstantInt *Score =
-              ConstantInt::get(LargestType, score);
+          if(do_inst){
+            vis.reset();
+            vis.visit(BB);
 
-          /* Add score to shm[MAPSIZE] */
+            score+=score_ratio*inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
+          }
 
-          Value *MapScorePtr = IRB.CreateBitCast(
-              IRB.CreateGEP(MapPtr, MapScoreLoc), LargestType->getPointerTo());
-          LoadInst *MapScore = IRB.CreateLoad(MapScorePtr);
-          MapScore->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          if(do_exit){
+            score+=exit_score((*exit_dists)[&BB]);
+          }
+          
 
-          Value *IncrDist = IRB.CreateAdd(MapScore, Score);
-          IRB.CreateStore(IncrDist, MapScorePtr)
-              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          if(score>0){
+            ConstantInt *Score =
+                ConstantInt::get(LargestType, score);
 
-          /* Increase count at shm[MAPSIZE + (4 or 8)] */
+            /* Add score to shm[MAPSIZE] */
 
-          Value *MapCntPtr = IRB.CreateBitCast(
-              IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
-          LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
-          MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value *MapScorePtr = IRB.CreateBitCast(
+                IRB.CreateGEP(MapPtr, MapScoreLoc), LargestType->getPointerTo());
+            LoadInst *MapScore = IRB.CreateLoad(MapScorePtr);
+            MapScore->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-          Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
-          IRB.CreateStore(IncrCnt, MapCntPtr)
-              ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+            Value *IncrDist = IRB.CreateAdd(MapScore, Score);
+            IRB.CreateStore(IncrDist, MapScorePtr)
+                ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        }  
+            /* Increase count at shm[MAPSIZE + (4 or 8)] */
 
+            Value *MapCntPtr = IRB.CreateBitCast(
+                IRB.CreateGEP(MapPtr, MapCntLoc), LargestType->getPointerTo());
+            LoadInst *MapCnt = IRB.CreateLoad(MapCntPtr);
+            MapCnt->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+            Value *IncrCnt = IRB.CreateAdd(MapCnt, One);
+            IRB.CreateStore(IncrCnt, MapCntPtr)
+                ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          }
+          
+        } 
         inst_blocks++;
 
       }
@@ -381,7 +513,7 @@ static void registerAFLPass(const PassManagerBuilder &,
 }
 
 static RegisterPass<AFLCoverage> OptRegAFL{
-  "AFLC", "AFLCoverage",
+  "aflc", "AFLCoverage",
   false,
   false
 };
