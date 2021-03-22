@@ -144,7 +144,7 @@ export CXXFLAGS="$COPY_CXXFLAGS -distance=$TMP_DIR/distance.cfg.txt"
 pushd $SUBJECT
   make clean
   ./configure --disable-shared
-  make all
+  make xmllint
 popd
 ```
 

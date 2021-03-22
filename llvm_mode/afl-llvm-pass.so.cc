@@ -98,7 +98,7 @@ cl::opt<bool> InstAnalysis{
 };
 
 cl::opt<bool> ExitPathAnalysis{
-    "exit",
+    "exits",
     cl::desc("Enable Path-to-exit Analysis and Instrumentation.")
 };
 
@@ -188,14 +188,23 @@ static bool isBlacklisted(const Function *F) {
   return false;
 }
 
+// inline static uint64_t total_score(uint64_t arith_cnt, uint64_t store_cnt, uint64_t load_cnt, const std::map<int,int> *exit_dists){
+//   if(exit_dists==nullptr){
+//     return inst_score(arith_cnt, store_cnt, load_cnt);
+//   }
+//   else{
+//     return score_ratio*inst_score(arith_cnt, store_cnt, load_cnt)+exit_score(exit_dists);
+//   }
+// }
+
 inline static uint64_t inst_score(uint64_t arith_cnt, uint64_t store_cnt, uint64_t load_cnt){
   return arith_cnt+2*(store_cnt+load_cnt);
 }
 
-inline static uint64_t exit_score(const std::map<int,int> &exit_dists){
+inline static uint64_t exit_score(const std::map<int,int> *exit_dists){
   uint64_t sum=0;
 
-  for(auto p=exit_dists.lower_bound(0),end=exit_dists.upper_bound(max_exit_dist);p!=end;++p){
+  for(auto p=exit_dists->lower_bound(0),end=exit_dists->upper_bound(max_exit_dist);p!=end;++p){
     sum+=p->second;
   }
 
@@ -328,7 +337,7 @@ bool AFLCoverage::runOnModule(Module &M) {
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
     if(do_inst||do_exit){
-      SAYF(cCYA "afl-llvm-pass (497)" cBRI VERSION cRST " by RHK\n");
+      SAYF(cCYA "afl-llvm-pass (497)%s%s" cBRI VERSION cRST " by RHK\n",do_inst?"-inst":"",do_exit?"-exits":"");
     }
     else{
       SAYF(cCYA "afl-llvm-pass " cBRI VERSION cRST " by <lszekeres@google.com>\n");
@@ -388,8 +397,8 @@ bool AFLCoverage::runOnModule(Module &M) {
         continue;
       }
 
-      decltype(exit_path_dists(F)) exit_dists;
-      if(do_inst){
+      decltype(exit_path_dists(F)) exit_dists=nullptr;
+      if(do_exit){
         exit_dists=exit_path_dists(F);
       }
 
@@ -443,11 +452,12 @@ bool AFLCoverage::runOnModule(Module &M) {
             vis.reset();
             vis.visit(BB);
 
-            score+=score_ratio*inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
+            score+=inst_score(vis.arith_cnt,vis.store_cnt,vis.load_cnt);
           }
 
           if(do_exit){
-            score+=exit_score((*exit_dists)[&BB]);
+            score*=score_ratio;
+            score+=exit_score(&(*exit_dists)[&BB]);
           }
           
 
