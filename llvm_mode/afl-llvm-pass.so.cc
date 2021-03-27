@@ -122,6 +122,22 @@ namespace {
 
   };
 
+  template<int MaxDist>
+  struct ExitDistRecord{
+    std::array<int,MaxDist+1> forward_dist_count={};
+    std::array<int, MaxDist+1> backward_dist_count={};
+
+    int &operator[] (int idx){
+      return (idx>=0)?forward_dist_count.at(idx):backward_dist_count.at(-idx);
+    }
+    const int &operator[] (int idx) const{
+      return (idx>=0)?forward_dist_count.at(idx):backward_dist_count.at(-idx);
+    }
+  };
+
+  template <int MaxDist>
+  using BB_ExitDist_map=DenseMap<const BasicBlock *, ExitDistRecord<MaxDist> >; 
+
 }
 
 char AFLCoverage::ID = 0;
@@ -201,11 +217,16 @@ inline static uint64_t inst_score(uint64_t arith_cnt, uint64_t store_cnt, uint64
   return arith_cnt+2*(store_cnt+load_cnt);
 }
 
-inline static uint64_t exit_score(const std::map<int,int> *exit_dists){
+template<int N=5>
+inline static uint64_t exit_score(const ExitDistRecord<N> &exit_dist_record){
   uint64_t sum=0;
 
-  for(auto p=exit_dists->lower_bound(0),end=exit_dists->upper_bound(max_exit_dist);p!=end;++p){
-    sum+=p->second;
+  if(exit_dist_record[0]!=0){
+    return 0;
+  }
+
+  for(int i=1;i<=N;++i){
+    sum+=(6-i)*(exit_dist_record[i]+exit_dist_record[-i]);
   }
 
   return sum;
@@ -237,10 +258,13 @@ struct InstScoreVisitor:public InstVisitor<InstScoreVisitor>{
 
 };
 
-std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_path_dists(const Function &F){
+template<int N=5>
+std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 	auto BB_num=F.size();
-	std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_dists_ptr;
-  auto &exit_dists=*exit_dists_ptr;
+
+	using map_type=BB_ExitDist_map<N>;
+	std::unique_ptr<map_type > exit_dists_ptr=std::unique_ptr<map_type >(new map_type());
+  	auto &exit_dists=*exit_dists_ptr;
 	DenseMap<const BasicBlock *, std::array<int, 2> > out_degs;
 	// DenseMap<const BasicBlock *, SmallVector<const BasicBlock *, 4> > BB_preds;
 
@@ -289,8 +313,8 @@ std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_path_dis
 				continue;
 			}
 
-			for(const auto &KV:exits_entry){
-				exit_dists[pred_BB][KV.first+1]+=KV.second;
+			for(int i=0;i<N;++i){
+				exit_dists[pred_BB][i+1]+=exits_entry[i];
 			}
 
 			--out_degs[pred_BB][0];
@@ -314,9 +338,12 @@ std::unique_ptr<DenseMap<const BasicBlock *, std::map<int,int> > > exit_path_dis
 					continue;
 				}
 
-				auto max_e_dist=exit_dists[succ].rbegin()->second;
-
-				++exit_dists[&BB][-max_e_dist-1];
+				for(int i=4;i>=0;--i){
+					if(exit_dists[succ][i]!=0){
+						++exit_dists[&BB][-i-1];
+						break;
+					}
+				}
 			}
 
 			
@@ -457,7 +484,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
           if(do_exit){
             score*=score_ratio;
-            score+=exit_score(&(*exit_dists)[&BB]);
+            score+=exit_score((*exit_dists)[&BB]);
           }
           
 
