@@ -420,14 +420,12 @@ bool AFLCoverage::runOnModule(Module &M) {
 
     InstScoreVisitor vis;
     for (auto &F : M) {
-      if(isBlacklisted(&F)){
-        continue;
-      }
-
       decltype(exit_path_dists(F)) exit_dists=nullptr;
       if(do_exit){
         exit_dists=exit_path_dists(F);
       }
+
+      bool blacklisted=isBlacklisted(&F);
 
       for (auto &BB : F) {
 
@@ -472,7 +470,7 @@ bool AFLCoverage::runOnModule(Module &M) {
             IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-        if(do_inst||do_exit){
+        if(!blacklisted&&(do_inst||do_exit)){
           uint64_t score=0;
 
           if(do_inst){
