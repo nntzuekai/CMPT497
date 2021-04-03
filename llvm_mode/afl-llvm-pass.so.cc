@@ -102,6 +102,12 @@ cl::opt<bool> ExitPathAnalysis{
     cl::desc("Enable Path-to-exit Analysis and Instrumentation.")
 };
 
+cl::alias ExitPathAnalysis_1{
+	"path",
+	cl::desc("Alias for -exits"),
+	cl::aliasopt(ExitPathAnalysis)
+};
+
 constexpr int max_exit_dist=5;
 constexpr int score_ratio=5;
 
@@ -265,7 +271,7 @@ std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 	using map_type=BB_ExitDist_map<N>;
 	std::unique_ptr<map_type > exit_dists_ptr=std::unique_ptr<map_type >(new map_type());
   	auto &exit_dists=*exit_dists_ptr;
-	DenseMap<const BasicBlock *, std::array<int, 2> > out_degs;
+	DenseMap<const BasicBlock *, int > out_degs;
 	// DenseMap<const BasicBlock *, SmallVector<const BasicBlock *, 4> > BB_preds;
 
 	SmallVector<std::pair<const BasicBlock *, const BasicBlock *>, 8> back_edges;
@@ -283,14 +289,11 @@ std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 
 		if(succ_num>0){
 			for(const auto *succ_BB:successors(&BB)){
-				if(BE_set.count(std::make_pair(&BB,succ_BB))){
-					++out_degs[&BB][1];
-				}
-				else{
-					++out_degs[&BB][0];
+				if(!BE_set.count(std::make_pair(&BB,succ_BB))){
+					++out_degs[&BB];
 				}
 			}
-			if(out_degs[&BB][0]==0){
+			if(out_degs[&BB]==0){
 				exit_dists[&BB][0]=1;
 				zero_degs.insert(&BB);
 			}
@@ -317,9 +320,9 @@ std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 				exit_dists[pred_BB][i+1]+=exits_entry[i];
 			}
 
-			--out_degs[pred_BB][0];
+			--out_degs[pred_BB];
 
-			if(out_degs[pred_BB][0]==0){
+			if(out_degs[pred_BB]==0){
 				zero_degs.insert(pred_BB);
 			}
 		}
@@ -329,24 +332,12 @@ std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 
 	assert(finised_cnt==BB_num);
 
-	for(const auto &BB:F){
-
-		if(out_degs[&BB][1]){
-			
-			for(const BasicBlock *succ:successors(&BB)){
-				if(!BE_set.count(std::make_pair(&BB,succ))){
-					continue;
-				}
-
-				for(int i=N-1;i>=0;--i){
-					if(exit_dists[succ][i]!=0){
-						++exit_dists[&BB][-i-1];
-						break;
-					}
-				}
+	for(const auto &E:back_edges){
+		for(int i=N-1;i>=0;--i){
+			if(exit_dists[E.second][i]!=0){
+				++exit_dists[E.first][-i-1];
+				break;
 			}
-
-			
 		}
 	}
 
@@ -364,7 +355,7 @@ bool AFLCoverage::runOnModule(Module &M) {
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
     if(do_inst||do_exit){
-      SAYF(cCYA "afl-llvm-pass (497)%s%s" cBRI VERSION cRST " by RHK\n",do_inst?"-inst":"",do_exit?"-exits":"");
+      SAYF(cCYA "afl-llvm-pass (AFLW) %s %s" cBRI VERSION cRST " by RHK\n",do_inst?"-inst":"",do_exit?"-exit_path":"");
     }
     else{
       SAYF(cCYA "afl-llvm-pass " cBRI VERSION cRST " by <lszekeres@google.com>\n");
