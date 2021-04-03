@@ -148,38 +148,6 @@ namespace {
 
 char AFLCoverage::ID = 0;
 
-static void getDebugLoc(const Instruction *I, std::string &Filename,
-                        unsigned &Line) {
-#ifdef LLVM_OLD_DEBUG_API
-  DebugLoc Loc = I->getDebugLoc();
-  if (!Loc.isUnknown()) {
-    DILocation cDILoc(Loc.getAsMDNode(M.getContext()));
-    DILocation oDILoc = cDILoc.getOrigLocation();
-
-    Line = oDILoc.getLineNumber();
-    Filename = oDILoc.getFilename().str();
-
-    if (filename.empty()) {
-      Line = cDILoc.getLineNumber();
-      Filename = cDILoc.getFilename().str();
-    }
-  }
-#else
-  if (DILocation *Loc = I->getDebugLoc()) {
-    Line = Loc->getLine();
-    Filename = Loc->getFilename().str();
-
-    if (Filename.empty()) {
-      DILocation *oDILoc = Loc->getInlinedAt();
-      if (oDILoc) {
-        Line = oDILoc->getLine();
-        Filename = oDILoc->getFilename().str();
-      }
-    }
-  }
-#endif /* LLVM_OLD_DEBUG_API */
-}
-
 static bool isBlacklisted(const Function *F) {
   static const SmallVector<std::string, 4> BlacklistPrefixes{
     "asan.",
@@ -223,7 +191,7 @@ inline static uint64_t inst_score(uint64_t arith_cnt, uint64_t store_cnt, uint64
   return arith_cnt+2*(store_cnt+load_cnt);
 }
 
-template<int N=5>
+template<int N=max_exit_dist>
 inline static uint64_t exit_score(const ExitDistRecord<N> &exit_dist_record){
   uint64_t sum=0;
 
@@ -264,9 +232,9 @@ struct InstScoreVisitor:public InstVisitor<InstScoreVisitor>{
 
 };
 
-template<int N=5>
+template<int N=max_exit_dist>
 std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
-	auto BB_num=F.size();
+	// auto BB_num=F.size();
 
 	using map_type=BB_ExitDist_map<N>;
 	std::unique_ptr<map_type > exit_dists_ptr=std::unique_ptr<map_type >(new map_type());
