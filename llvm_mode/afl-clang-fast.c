@@ -140,7 +140,7 @@ static void edit_params(u32 argc, char** argv) {
   while (--argc) {
     u8* cur = *(++argv);
 
-    if (!strncmp(cur, "-inst", 5)||!strncmp(cur,"-exits",6))
+    if (!strncmp(cur, "-inst", 5)||!strncmp(cur,"-exits",6)||!strncmp(cur, "-path", 5))
       cc_params[cc_par_cnt++] = "-mllvm";
 
     if (!strcmp(cur, "-m32")) bit_mode = 32;

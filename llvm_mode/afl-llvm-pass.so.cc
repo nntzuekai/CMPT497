@@ -350,8 +350,8 @@ bool AFLCoverage::runOnModule(Module &M) {
   /* Show a banner */
 
   char be_quiet = 0;
-  bool do_inst=InstAnalysis.getValue();
-  bool do_exit=ExitPathAnalysis.getValue();
+  bool do_inst=InstAnalysis;
+  bool do_exit=ExitPathAnalysis;
   if (isatty(2) && !getenv("AFL_QUIET")) {
 
     if(do_inst||do_exit){
