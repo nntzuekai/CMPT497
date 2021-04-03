@@ -226,7 +226,7 @@ inline static uint64_t exit_score(const ExitDistRecord<N> &exit_dist_record){
   }
 
   for(int i=1;i<=N;++i){
-    sum+=(6-i)*(exit_dist_record[i]+exit_dist_record[-i]);
+    sum+=(N+1-i)*(exit_dist_record[i]+exit_dist_record[-i]);
   }
 
   return sum;
@@ -338,7 +338,7 @@ std::unique_ptr<BB_ExitDist_map<N> > exit_path_dists(const Function &F){
 					continue;
 				}
 
-				for(int i=4;i>=0;--i){
+				for(int i=N-1;i>=0;--i){
 					if(exit_dists[succ][i]!=0){
 						++exit_dists[&BB][-i-1];
 						break;
